@@ -1,3 +1,4 @@
+using UnityEngine;
 using UnityEngine.SceneManagement;
 
 namespace _GurkanTemplate.Scripts
@@ -5,9 +6,9 @@ namespace _GurkanTemplate.Scripts
     public static class LevelHelper
     {
         private static bool _playMode;
-        private static int _levelNo;
 
-        public static int LevelNo => _levelNo + 1;
+        public static int LevelNo => PlayerPrefs.HasKey("LevelNo")? PlayerPrefs.GetInt("LevelNo"): 1;
+        private static bool _lastStateWin;
 
         public static void GameStarted()
         {
@@ -18,14 +19,15 @@ namespace _GurkanTemplate.Scripts
         {
             if(!_playMode) return;
             _playMode = false;
-            if (win) _levelNo++;
+            _lastStateWin = win;
         }
 
 
         public static void LoadLevel()
         {
             if(_playMode) return;
-            SceneManager.LoadScene(_levelNo);
+            if (_lastStateWin) PlayerPrefs.SetInt("LevelNo", LevelNo + 1);
+            SceneManager.LoadScene(LevelNo % SceneManager.sceneCount);
         }
     }
 }
