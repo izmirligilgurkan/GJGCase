@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using _GurkanTemplate.Scripts;
 using DG.Tweening;
+using Lean.Touch;
 using Lofelt.NiceVibrations;
 using UnityEngine;
 
@@ -23,14 +24,51 @@ namespace _GJGCase.Scripts
         private float _timeSinceLastFeedback;
         private MeshFilter _meshFilter;
         private Vector3[] _cachedVertices;
+        private Transform PeelOffVertexTarget => brushController.transform;
+        private float[] _vertexPeelWeights;
         private void OnEnable()
         {
             GameManager.TransitionToStarted += Transition;
+            BrushController.PeelOffFingerDown += PeelOffFingerDown;
+            BrushController.PeelOffFingerUp += PeelOffFingerUp;
+            BrushController.PeelOffFingerUpdate += PeelOffFingerUpdate;
         }
 
         private void OnDisable()
         {
-            GameManager.TransitionToStarted -= Transition; 
+            GameManager.TransitionToStarted -= Transition;
+            BrushController.PeelOffFingerDown -= PeelOffFingerDown;
+            BrushController.PeelOffFingerUp -= PeelOffFingerUp;
+            BrushController.PeelOffFingerUpdate -= PeelOffFingerUpdate;
+        }
+
+        private void PeelOffFingerUpdate(LeanFinger leanFinger)
+        {
+            //SetWeights(PeelOffVertexTarget.position);
+            PeelOff(leanFinger);
+        }
+
+        private void PeelOffFingerUp()
+        {
+            CacheVertices();
+        }
+
+        private void PeelOffFingerDown(Vector3 hitPosition)
+        {
+            SetWeights(hitPosition);
+        }
+
+        void SetWeights(Vector3 hitPosition)
+        {
+            Matrix4x4 localToWorld = transform.localToWorldMatrix;
+            var vertices = _cachedVertices;
+            _vertexPeelWeights = new float[vertices.Length];
+            for (int i = 0; i < _vertexPeelWeights.Length; i++)
+            {
+                var vertWorldPos = localToWorld.MultiplyPoint3x4(vertices[i]);
+                var dist = Vector3.Distance(hitPosition, vertWorldPos);
+                _vertexPeelWeights[i] = Mathf.Clamp01(1 - dist);
+            }
         }
 
         private void Awake()
@@ -50,15 +88,11 @@ namespace _GJGCase.Scripts
         private void Update()
         {
             _timeSinceLastFeedback += Time.deltaTime;
-            if (brushController.shouldPaint)
+            if (brushController.fingerDown)
             {
                 if (!_peelMode)
                 {
                     PaintWax(brushController.transform.position);
-                }
-                else
-                {
-                    PeelOff(brushController.transform.position);
                 }
             }
 
@@ -68,8 +102,15 @@ namespace _GJGCase.Scripts
                 {
                     SetHairTransformFromVertex(hairController);
                 }
+
             }
         
+        }
+
+        private void CacheVertices()
+        {
+            var originalMesh = _meshFilter.sharedMesh;
+            _cachedVertices = originalMesh.vertices;
         }
 
         private void MeshDeformInitialization()
@@ -80,11 +121,12 @@ namespace _GJGCase.Scripts
                 vertices = originalMesh.vertices,
                 triangles = originalMesh.triangles,
                 normals = originalMesh.normals,
+                tangents = originalMesh.tangents,
                 uv = originalMesh.uv
             };
+            
         
             var vertices = originalMesh.vertices;
-        
             _cachedVertices = originalMesh.vertices;
         
             for (int i = 0; i < vertices.Length; i++)
@@ -93,7 +135,8 @@ namespace _GJGCase.Scripts
             }
 
             mesh.vertices = vertices;
-            mesh.Optimize();
+            mesh.RecalculateNormals();
+            mesh.RecalculateTangents();
         
             _meshFilter.sharedMesh = mesh;
         }
@@ -115,30 +158,27 @@ namespace _GJGCase.Scripts
                 }
             }
         
-            var normals = _meshFilter.mesh.normals;
+            var normals = _meshFilter.sharedMesh.normals;
             var closestVertWorldPos = localToWorld.MultiplyPoint3x4(_cachedVertices[closestIndex]);
             var closestVertWorldNormal = localToWorld.MultiplyVector(normals[closestIndex]);
             hairController.mappedVertexIndex = closestIndex;
             hairController.offsetFromMappedVertex = hairController.transform.position - closestVertWorldPos;
             hairController.rotationFromMappedVertex = Quaternion.FromToRotation(closestVertWorldNormal, hairController.transform.up);
+            hairController.transform.up = hairController.rotationFromMappedVertex * closestVertWorldNormal;
         }
 
         private void SetHairWaxLevel(HairController hairController)
         {
-            hairController.vertexWaxLevel = _meshFilter.mesh.colors[hairController.mappedVertexIndex].a;
+            hairController.vertexWaxLevel = _meshFilter.sharedMesh.colors[hairController.mappedVertexIndex].a;
         }
 
         private void SetHairTransformFromVertex(HairController hairController)
         {
             Matrix4x4 localToWorld = transform.localToWorldMatrix;
 
-            var vertices = _meshFilter.mesh.vertices;
-            var normals = _meshFilter.mesh.normals;
+            var vertices = _meshFilter.sharedMesh.vertices;
             var vertWorldPos = localToWorld.MultiplyPoint3x4(vertices[hairController.mappedVertexIndex]);
-            var vertWorldNormal = localToWorld.MultiplyVector(normals[hairController.mappedVertexIndex]);
-
             hairController.transform.position = vertWorldPos + hairController.offsetFromMappedVertex;
-            hairController.transform.up = Vector3.Lerp(hairController.transform.up, hairController.rotationFromMappedVertex * vertWorldNormal, .001f);
         }
 
    
@@ -153,9 +193,11 @@ namespace _GJGCase.Scripts
                 colors = originalMesh.colors,
                 triangles = originalMesh.triangles,
                 normals = originalMesh.normals,
+                tangents = originalMesh.tangents,
                 uv = originalMesh.uv
             };
             var vertices = mesh.vertices;
+            var normals = mesh.normals;
             var colors = new Color[vertices.Length];
         
             float totalDiff = 0;
@@ -164,16 +206,19 @@ namespace _GJGCase.Scripts
                 var vertWorldPos = localToWorld.MultiplyPoint3x4(_cachedVertices[i]);
                 var dist = Vector3.Distance(vertWorldPos, worldPos);
                 var weight = Mathf.Clamp01((brushEffectArea - dist) / brushEffectArea);
-                vertices[i] = Vector3.Lerp(vertices[i],_cachedVertices[i], weight *.5f);
+                vertices[i] = Vector3.Lerp(vertices[i],_cachedVertices[i], weight * Time.deltaTime * 50f);
                 var finalDist = Vector3.Distance(vertices[i], _cachedVertices[i]);
                 colors[i].a = Mathf.Clamp01((brushEffectArea - finalDist) / brushEffectArea);
+                normals[i] = Vector3.up;
                 totalDiff += finalDist;
                 if(finalDist > 2f && weight > .7f) PaintWaxFeedback(vertWorldPos);
             }
             if(totalDiff < transitionThreshold) ReadyForTransitionToPulling();
             mesh.vertices = vertices;
+            mesh.normals = normals;
             mesh.colors = colors;
             mesh.RecalculateNormals();
+            mesh.RecalculateTangents();
             _meshFilter.sharedMesh = mesh;
             foreach (var hairController in _hairControllers)
             {
@@ -181,9 +226,10 @@ namespace _GJGCase.Scripts
             }
         }
 
-        private void PeelOff(Vector3 worldPos)
+        private void PeelOff(LeanFinger leanFinger)
         {
-            Matrix4x4 localToWorld = transform.localToWorldMatrix;
+            if(_vertexPeelWeights == null || leanFinger.ScreenDelta.magnitude <= 1f) return;
+            var worldToLocal = transform.worldToLocalMatrix;
             var originalMesh = _meshFilter.sharedMesh; 
             var mesh = new Mesh
             {
@@ -191,29 +237,38 @@ namespace _GJGCase.Scripts
                 colors = originalMesh.colors,
                 triangles = originalMesh.triangles,
                 normals = originalMesh.normals,
+                tangents = originalMesh.tangents,
                 uv = originalMesh.uv
             };
             var vertices = mesh.vertices;
             var colors = new Color[vertices.Length];
         
-            float totalDiff = 0;
             for (int i = 0; i < vertices.Length; i++)
             {
-                var vertWorldPos = localToWorld.MultiplyPoint3x4(_cachedVertices[i]);
-                var dist = Vector3.Distance(vertWorldPos, worldPos);
-                var weight = Mathf.Clamp01((brushEffectArea * 2f - dist) / (brushEffectArea * 2f));
-                vertices[i].z = Mathf.Lerp(vertices[i].z, _cachedVertices[i].z - 300f, weight * Time.deltaTime * 50f);
-                var finalDist = Mathf.Abs(vertices[i].z - (_cachedVertices[i].z - 300f));
+                var targetLocalPos = worldToLocal.MultiplyPoint3x4(PeelOffVertexTarget.position);
+                var weight = _vertexPeelWeights[i];
+                var dist = Vector3.Distance(targetLocalPos, vertices[i]);
+                vertices[i] += (Vector3)leanFinger.ScaledDelta * Time.deltaTime * weight * .1f;
+                vertices[i].z -= dist * weight * Time.deltaTime * weight * 2f;
+                var finalDist = Vector3.Distance(_cachedVertices[i], vertices[i]);
                 colors[i].a = Mathf.Clamp01((brushEffectArea * 2f - finalDist) / (brushEffectArea * 2f));
-                totalDiff += finalDist;
             }
-        
-            if(totalDiff < transitionThreshold) ReadyForTransitionToFinish();
-
+            
             mesh.vertices = vertices;
             mesh.colors = colors;
             mesh.RecalculateNormals();
+            mesh.RecalculateTangents();
             _meshFilter.sharedMesh = mesh;
+            CheckHairsForFinish();
+            
+        }
+
+        private void CheckHairsForFinish()
+        {
+            if (_hairControllers.All(controller => controller.peeledOff))
+            {
+                ReadyForTransitionToFinish();
+            }
         }
 
         private void ReadyForTransitionToPulling()
@@ -227,6 +282,7 @@ namespace _GJGCase.Scripts
             if(_readyForTransitionToFinish) return;
             _readyForTransitionToFinish = true;
             GameManager.ReadyForTransition();
+            GameManager.TransitionButtonPressed();
         }
 
         private void Transition()

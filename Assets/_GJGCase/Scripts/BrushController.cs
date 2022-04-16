@@ -1,3 +1,4 @@
+using System;
 using _GurkanTemplate.Scripts;
 using DG.Tweening;
 using Lean.Touch;
@@ -7,14 +8,21 @@ namespace _GJGCase.Scripts
 {
     public class BrushController : FingerControlled
     {
-        public bool shouldPaint;
+        public bool fingerDown;
         [SerializeField] private float moveSpeed = 1f;
+        
         private Vector3 _childInitLocalPos;
         private Vector3 _initWorldPos;
+        public bool peelMode;
         private bool _updateChildLocalPosition;
+        private Camera _camera;
+        public static event Action<Vector3> PeelOffFingerDown;
+        public static event Action PeelOffFingerUp;
+        public static event Action<LeanFinger> PeelOffFingerUpdate;
 
         private void Start()
         {
+            _camera = Camera.main;
             _childInitLocalPos = transform.GetChild(0).localPosition;
             _initWorldPos = transform.position;
             transform.GetChild(0).position += Vector3.left * 2f;
@@ -52,10 +60,7 @@ namespace _GJGCase.Scripts
         private void OnTransitionCompleted()
         {
             transform.position = _initWorldPos;
-            transform.GetChild(1).gameObject.SetActive(true);
-            transform.GetChild(1).position += Vector3.left * 2f;
-            transform.GetChild(1).DOLocalMove(_childInitLocalPos + Vector3.back * .1f, .3f).OnComplete(() => _updateChildLocalPosition = true);
-
+            peelMode = true;
         }
 
         private void OnGameStart()
@@ -67,22 +72,38 @@ namespace _GJGCase.Scripts
 
         public override void OnFingerDown(LeanFinger leanFinger)
         {
-            shouldPaint = true;
+            fingerDown = true;
+            var hit = peelMode? RaycastForArmFromScreen(leanFinger.ScreenPosition): RaycastForArm();
+            if (peelMode && hit.HasValue)
+            {
+                transform.position = hit.Value.point;
+                PeelOffFingerDown?.Invoke(hit.Value.point);
+            }
+            
         }
 
         public override void OnFingerUpdate(LeanFinger leanFinger)
         {
             Vector3 delta = leanFinger.ScaledDelta;
-            delta = new Vector3(delta.x, 0, delta.y);
+            delta = _camera.transform.TransformDirection(delta);
             var hit = RaycastForArm();
             var origin = hit?.point ?? transform.position;
-            transform.position = origin + delta * moveSpeed;
+            if (peelMode)
+            {
+                transform.position += delta * Time.deltaTime;
+                PeelOffFingerUpdate?.Invoke(leanFinger);
+            }
+            else
+            {
+                transform.position = origin + delta * moveSpeed;
+            }
             transform.forward = -hit?.normal ?? transform.forward;
         }
 
         public override void OnFingerUp(LeanFinger leanFinger)
         {
-            shouldPaint = false;
+            fingerDown = false;
+            if(peelMode) PeelOffFingerUp?.Invoke();
         }
 
         RaycastHit? RaycastForArm()
@@ -94,15 +115,24 @@ namespace _GJGCase.Scripts
             }
             return null;
         }
+        RaycastHit? RaycastForArmFromScreen(Vector2 screenPos)
+        {
+            int layerMask = 1 << 6;
+            if (Physics.Raycast(_camera.ScreenPointToRay(screenPos), out var hit, Mathf.Infinity, layerMask))
+            {
+                return hit;
+            }
+            return null;
+        }
 
         private void Update()
         {
             if (_updateChildLocalPosition)
             {
                 transform.GetChild(0).localPosition =
-                    shouldPaint ? _childInitLocalPos : _childInitLocalPos + Vector3.back * .1f;
+                    fingerDown ? _childInitLocalPos : _childInitLocalPos + Vector3.back * .1f;
                 transform.GetChild(1).localPosition =
-                    shouldPaint ? _childInitLocalPos : _childInitLocalPos + Vector3.back * .1f;
+                    fingerDown ? _childInitLocalPos : _childInitLocalPos + Vector3.back * .1f;
             }
         
         }

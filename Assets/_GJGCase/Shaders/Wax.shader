@@ -49,5 +49,4 @@ Shader "Custom/Wax"
         }
         ENDCG
     }
-    FallBack "Diffuse"
 }
